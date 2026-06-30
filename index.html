@@ -22,47 +22,50 @@
       --cyber-font: 'Courier New', monospace;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
       background: var(--cyber-bg-main);
       color: var(--cyber-text-main);
       font-family: var(--cyber-font);
-      overflow: hidden;
-      height: 100vh;
-      width: 100vw;
     }
     cyber-daw-workspace {
-      display: block;
+      display: flex;
+      flex-direction: column;
       width: 100vw;
       height: 100vh;
     }
-    /* Фикс для main-area */
     .main-area {
       display: flex;
       flex: 1;
       min-height: 0;
       overflow: hidden;
-      height: 100vh;
     }
     .browser-area {
       flex: 0 0 180px;
       height: 100%;
       overflow-y: auto;
+      border-right: 1px solid var(--cyber-border-color);
     }
     .workspace {
       flex: 1;
       position: relative;
       overflow: hidden;
     }
+    cyber-window { display: none; }
+    cyber-window.visible { display: block; }
   </style>
 </head>
 <body>
   <cyber-daw-workspace></cyber-daw-workspace>
   <script>
     // ============================================================
-    // 1. Глобальная шина событий (с поддержкой AbortSignal)
+    // 1. Глобальная шина событий
     // ============================================================
     window.globalBus = {
       listeners: {},
+      _emitting: false,
       on(event, callback, options = {}) {
         if (!this.listeners[event]) this.listeners[event] = [];
         if (options.signal) {
@@ -78,16 +81,21 @@
         this.listeners[event] = this.listeners[event].filter(cb => cb !== callback);
       },
       emit(event, data = {}) {
+        if (this._emitting) return;
         if (!this.listeners[event]) return;
-        this.listeners[event].forEach(cb => {
+        this._emitting = true;
+        const callbacks = this.listeners[event].slice();
+        callbacks.forEach(cb => {
           try { cb(data); } catch (e) { console.error(`Ошибка в ${event}`, e); }
         });
+        this._emitting = false;
       }
     };
 
     // ============================================================
-    // 2. Регистрация ВСЕХ компонентов в правильном порядке
+    // 2. Все веб-компоненты
     // ============================================================
+
     // 2.1 cyber-button
     const buttonTemplate = document.createElement('template');
     buttonTemplate.innerHTML = `
@@ -883,6 +891,7 @@
             <span class="title" id="title">Window</span>
             <div class="controls">
               <cyber-button id="minimize">_</cyber-button>
+              <cyber-button id="maximize">⬜</cyber-button>
               <cyber-button id="close">✕</cyber-button>
             </div>
           </div>
@@ -899,6 +908,10 @@
         this.shadowRoot.getElementById('minimize').addEventListener('click', (e) => {
           e.stopPropagation();
           this.dispatchEvent(new CustomEvent('window-minimize-clicked', { bubbles: true, composed: true }));
+        });
+        this.shadowRoot.getElementById('maximize').addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.dispatchEvent(new CustomEvent('window-maximize-clicked', { bubbles: true, composed: true }));
         });
       }
       attributeChangedCallback() {
@@ -959,34 +972,22 @@
         `;
         this._border = this.shadowRoot.getElementById('border');
         this._abort = null;
-        this._dragData = null;
+        this._isMaximized = false;
+        this._savedRect = null;
       }
       connectedCallback() {
-        // Фокус при клике на окно
         this.addEventListener('mousedown', () => this.focus());
-        // Закрытие
         this.addEventListener('window-close-clicked', () => {
           this.style.display = 'none';
           window.globalBus?.emit('window-toggle', { windowId: this.id, visible: false });
-          // сброс кнопки в топбаре
-          const topBar = document.querySelector('cyber-top-bar');
-          if (topBar) {
-            const btnId = this.id.replace('win-', 'toggle-');
-            const btn = topBar.shadowRoot?.querySelector(`#${btnId}`);
-            if (btn) btn.setAttribute('active', 'false');
-          }
         });
         this.addEventListener('window-minimize-clicked', () => {
           this.style.display = 'none';
           window.globalBus?.emit('window-toggle', { windowId: this.id, visible: false });
-          const topBar = document.querySelector('cyber-top-bar');
-          if (topBar) {
-            const btnId = this.id.replace('win-', 'toggle-');
-            const btn = topBar.shadowRoot?.querySelector(`#${btnId}`);
-            if (btn) btn.setAttribute('active', 'false');
-          }
         });
-        // Перетаскивание
+        this.addEventListener('window-maximize-clicked', () => {
+          this._toggleMaximize();
+        });
         const header = this.querySelector('cyber-window-header');
         if (header) {
           header.addEventListener('mousedown', (e) => {
@@ -994,14 +995,11 @@
             this._startDrag(e);
           });
         }
-        // Подписка на фокус других окон
         if (window.globalBus) {
           this._abort = new AbortController();
           const signal = this._abort.signal;
           window.globalBus.on('window-focused', (data) => {
-            if (data.windowId !== this.id) {
-              this._border.setAttribute('active', 'false');
-            }
+            if (data.windowId !== this.id) this._border.setAttribute('active', 'false');
           }, { signal });
         }
         if (this.hasAttribute('active')) this._border.setAttribute('active', 'true');
@@ -1016,11 +1014,43 @@
         this._border.setAttribute('active', 'true');
         window.globalBus?.emit('window-focused', { windowId: this.id });
       }
+      _toggleMaximize() {
+        if (this._isMaximized) {
+          if (this._savedRect) {
+            this.style.left = this._savedRect.left + 'px';
+            this.style.top = this._savedRect.top + 'px';
+            this.style.width = this._savedRect.width + 'px';
+            this.style.height = this._savedRect.height + 'px';
+          }
+          this._isMaximized = false;
+        } else {
+          const rect = this.getBoundingClientRect();
+          this._savedRect = { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+          const workspace = this.parentElement;
+          if (workspace) {
+            const wsRect = workspace.getBoundingClientRect();
+            this.style.left = '0px';
+            this.style.top = '0px';
+            this.style.width = wsRect.width + 'px';
+            this.style.height = wsRect.height + 'px';
+          }
+          this._isMaximized = true;
+        }
+      }
       _startDrag(e) {
         e.preventDefault();
         const rect = this.getBoundingClientRect();
         const startX = e.clientX - rect.left;
         const startY = e.clientY - rect.top;
+        if (this._isMaximized) {
+          this._isMaximized = false;
+          if (this._savedRect) {
+            this.style.left = this._savedRect.left + 'px';
+            this.style.top = this._savedRect.top + 'px';
+            this.style.width = this._savedRect.width + 'px';
+            this.style.height = this._savedRect.height + 'px';
+          }
+        }
         const onMove = (ev) => {
           this.style.left = (ev.clientX - startX) + 'px';
           this.style.top = (ev.clientY - startY) + 'px';
@@ -1159,7 +1189,7 @@
     }
     customElements.define('cyber-note-block', CyberNoteBlock);
 
-    // 2.16 cyber-playlist-clip (с двойным кликом для открытия piano roll)
+    // 2.16 cyber-playlist-clip
     class CyberPlaylistClip extends HTMLElement {
       constructor() {
         super();
@@ -1219,11 +1249,11 @@
             composed: true
           }));
         });
-        // Двойной клик для открытия Piano Roll
         this.addEventListener('dblclick', () => {
-          const instrumentId = this._instrumentId || 'synth';
-          const instrumentName = this._title.textContent || 'Pattern';
-          window.globalBus?.emit('open-piano-roll', { instrumentId, instrumentName });
+          window.globalBus?.emit('open-piano-roll', {
+            instrumentId: this._instrumentId,
+            instrumentName: this._title.textContent
+          });
         });
       }
       _resizeCanvas() {
@@ -1304,9 +1334,9 @@
         this.attachShadow({ mode: 'open' });
         this.shadowRoot.innerHTML = `
           <style>
-            :host { display: flex; flex-direction: column-reverse; width: 60px; border-right: 1px solid var(--cyber-border-color); user-select: none; }
+            :host { display: flex; flex-direction: column-reverse; width: 60px; border-right: 1px solid var(--cyber-border-color); user-select: none; height: 100%; }
           </style>
-          <div id="keys"></div>
+          <div id="keys" style="flex:1;"></div>
         `;
       }
       connectedCallback() {
@@ -1326,7 +1356,7 @@
     }
     customElements.define('cyber-keyboard', CyberKeyboard);
 
-    // 2.19 cyber-channel-strip (с проверкой регистрации step-button)
+    // 2.19 cyber-channel-strip – ИСПРАВЛЕННАЯ ВЕРСИЯ
     class CyberChannelStrip extends HTMLElement {
       constructor() {
         super();
@@ -1363,28 +1393,42 @@
         const name = this.getAttribute('name') || 'Track';
         this.shadowRoot.getElementById('trackName').textContent = name;
         const stepsContainer = this.shadowRoot.getElementById('steps');
-        // Проверяем, зарегистрирован ли cyber-step-button
-        if (customElements.get('cyber-step-button')) {
-          for (let i = 0; i < 16; i++) {
-            const btn = document.createElement('cyber-step-button');
-            btn.setAttribute('data-step', i);
-            stepsContainer.appendChild(btn);
+
+        // Используем try-catch для безопасного создания step-кнопок
+        try {
+          // Проверяем, зарегистрирован ли компонент
+          if (customElements.get('cyber-step-button')) {
+            for (let i = 0; i < 16; i++) {
+              const btn = new CyberStepButton(); // создаём через конструктор
+              btn.setAttribute('data-step', i);
+              stepsContainer.appendChild(btn);
+            }
+          } else {
+            // fallback
+            for (let i = 0; i < 16; i++) {
+              const div = document.createElement('div');
+              div.style.cssText = 'width:18px;height:24px;background:#333;border:1px solid #222;border-radius:2px;display:inline-block;margin:1px;';
+              stepsContainer.appendChild(div);
+            }
           }
-        } else {
-          // fallback: создаём простые div
+        } catch (e) {
+          // если всё сломалось – fallback
           for (let i = 0; i < 16; i++) {
             const div = document.createElement('div');
             div.style.cssText = 'width:18px;height:24px;background:#333;border:1px solid #222;border-radius:2px;display:inline-block;margin:1px;';
             stepsContainer.appendChild(div);
           }
         }
+
         this.shadowRoot.getElementById('trackName').addEventListener('click', () => {
           window.globalBus?.emit('open-piano-roll', { instrumentId: this.getAttribute('id') || 'synth', instrumentName: name });
         });
+
         this.addEventListener('step-toggled', (e) => {
           const { step, active } = e.detail;
           window.globalBus?.emit('pattern-updated', { instrument: this.getAttribute('id') || 'synth', step, active });
         });
+
         if (window.globalBus) {
           this._abort = new AbortController();
           const signal = this._abort.signal;
@@ -1405,10 +1449,10 @@
     customElements.define('cyber-channel-strip', CyberChannelStrip);
 
     // ============================================================
-    // 3. Организмы (крупные блоки)
+    // 3. Организмы
     // ============================================================
 
-    // 3.1 cyber-top-bar (исправлены идентификаторы кнопок)
+    // 3.1 cyber-top-bar
     class CyberTopBar extends HTMLElement {
       constructor() {
         super();
@@ -1435,6 +1479,7 @@
             <cyber-button id="play" toggle>▶</cyber-button>
             <cyber-button id="stop">⏹</cyber-button>
             <cyber-button id="record" style="color:var(--cyber-accent-red);">●</cyber-button>
+            <cyber-button id="loop" toggle>🔁</cyber-button>
           </div>
           <div class="group">
             <cyber-numeric-display id="bpm" value="130"></cyber-numeric-display>
@@ -1450,30 +1495,35 @@
           </div>
         `;
         this._isPlaying = false;
+        this._loopEnabled = false;
         this._abort = null;
       }
       connectedCallback() {
         this.playBtn = this.shadowRoot.getElementById('play');
         this.stopBtn = this.shadowRoot.getElementById('stop');
+        this.loopBtn = this.shadowRoot.getElementById('loop');
 
-        // Play
         this.playBtn.addEventListener('toggle-change', (e) => {
           this._isPlaying = e.detail.active;
           window.globalBus?.emit('daw-play-toggle', { isPlaying: this._isPlaying });
         });
-
-        // Stop – сбрасываем play и отправляем stop
         this.stopBtn.addEventListener('click', () => {
           if (this._isPlaying) {
             this.playBtn.setAttribute('active', 'false');
             this._isPlaying = false;
             window.globalBus?.emit('daw-stop', { resetToStart: true });
-            // дополнительно отправляем play-toggle с false
             window.globalBus?.emit('daw-play-toggle', { isPlaying: false });
           }
         });
+        this.loopBtn.addEventListener('toggle-change', (e) => {
+          this._loopEnabled = e.detail.active;
+          window.globalBus?.emit('timeline-loop-changed', {
+            isEnabled: this._loopEnabled,
+            loopStart: 0,
+            loopEnd: 4
+          });
+        });
 
-        // Переключение окон – используем правильные id
         const toggleWindow = (id) => {
           const btn = this.shadowRoot.querySelector(`#toggle-${id}`);
           if (!btn) return;
@@ -1485,7 +1535,6 @@
         this.shadowRoot.getElementById('toggle-playlist').addEventListener('toggle-change', () => toggleWindow('playlist'));
         this.shadowRoot.getElementById('toggle-channel-rack').addEventListener('toggle-change', () => toggleWindow('channel-rack'));
 
-        // Подписка на сброс play при остановке извне
         if (window.globalBus) {
           this._abort = new AbortController();
           const signal = this._abort.signal;
@@ -1495,9 +1544,23 @@
               this._isPlaying = false;
             }
           }, { signal });
+          window.globalBus.on('window-toggle', (data) => {
+            const idMap = {
+              'piano-roll': 'toggle-piano-roll',
+              'mixer': 'toggle-mixer',
+              'playlist': 'toggle-playlist',
+              'channel-rack': 'toggle-channel-rack'
+            };
+            const btnId = idMap[data.windowId];
+            if (!btnId) return;
+            const btn = this.shadowRoot?.querySelector(`#${btnId}`);
+            if (btn) {
+              if (data.visible) btn.setAttribute('active', 'true');
+              else btn.setAttribute('active', 'false');
+            }
+          }, { signal });
         }
 
-        // Показываем все окна по умолчанию
         setTimeout(() => {
           ['piano-roll','mixer','playlist','channel-rack'].forEach(id => {
             const btn = this.shadowRoot.querySelector(`#toggle-${id}`);
@@ -1562,7 +1625,8 @@
             .layout { display: flex; flex-direction: column; height: 100%; }
             .grid-area { flex:1; overflow: auto; background: var(--cyber-bg-dark); position: relative; }
             .grid-inner { position: relative; width: 2000px; height: 2000px; background-image: linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px); background-size: 20px 20px; }
-            .keyboard-wrapper { display: flex; }
+            .keyboard-wrapper { display: flex; height: 100%; }
+            cyber-keyboard { height: 100%; }
           </style>
           <div class="layout">
             <cyber-timeline-ruler></cyber-timeline-ruler>
@@ -1578,7 +1642,6 @@
       }
       connectedCallback() {
         const gridInner = this.shadowRoot.getElementById('gridInner');
-        // Пример нот
         const notes = [
           { pitch: 60, start: 0, duration: 1 },
           { pitch: 64, start: 1, duration: 0.5 },
@@ -1591,8 +1654,6 @@
           block.dataset.id = 'note-' + i;
           gridInner.appendChild(block);
         });
-
-        // Playhead
         if (window.globalBus) {
           this._abort = new AbortController();
           const signal = this._abort.signal;
@@ -1642,7 +1703,6 @@
           track.innerHTML = `<div class="label">Track ${i}</div>`;
           container.appendChild(track);
         }
-        // Пример клипа
         const clip = document.createElement('cyber-playlist-clip');
         clip.setAttribute('start-beat', '2');
         clip.setAttribute('track-index', '0');
@@ -1656,7 +1716,6 @@
         ], 'kick');
         container.querySelector('.track').appendChild(clip);
 
-        // Playhead
         if (window.globalBus) {
           this._abort = new AbortController();
           const signal = this._abort.signal;
@@ -1777,7 +1836,7 @@
     customElements.define('cyber-browser', CyberBrowser);
 
     // ============================================================
-    // 4. Аудио-движок (исправлен)
+    // 4. Аудио-движок
     // ============================================================
     class CyberAudioEngine extends HTMLElement {
       constructor() {
@@ -1803,6 +1862,7 @@
         this.sampleBuffers = new Map();
         this._abortController = null;
         this._vuInterval = null;
+        this._stopping = false;
       }
       connectedCallback() {
         window.addEventListener('click', () => this._initAudio(), { once: true });
@@ -1825,8 +1885,8 @@
           }, { signal });
           window.globalBus.on('timeline-loop-changed', (data) => {
             this.loopEnabled = data.isEnabled;
-            this.loopStart = data.loopStart;
-            this.loopEnd = data.loopEnd;
+            this.loopStart = data.loopStart || 0;
+            this.loopEnd = data.loopEnd || 4;
           }, { signal });
           this._startVuLoop();
         }
@@ -1850,7 +1910,6 @@
         this._loadSamples();
       }
       async _loadSamples() {
-        // Синтезированные сэмплы
         const sampleNames = ['kick', 'snare', 'hat'];
         for (let name of sampleNames) {
           const buffer = this.audioCtx.createBuffer(1, 44100 * 0.1, 44100);
@@ -1877,12 +1936,13 @@
         window.globalBus?.emit('time-tick', { step: 0, totalBeats: 0, audioTime: this.audioCtx.currentTime });
       }
       _stopTransport() {
+        if (this._stopping) return;
+        this._stopping = true;
         this.isPlaying = false;
         if (this.schedulerId) clearInterval(this.schedulerId);
         this.schedulerId = null;
         window.globalBus?.emit('time-tick', { step: 0, totalBeats: 0, audioTime: 0 });
-        // Также сбрасываем активность play в топбаре через отдельное событие
-        window.globalBus?.emit('daw-play-toggle', { isPlaying: false });
+        this._stopping = false;
       }
       _scheduler() {
         const ahead = 0.05;
@@ -1927,7 +1987,6 @@
           source.start(time);
           source.stop(time + 0.1);
         } else {
-          // fallback
           const osc = this.audioCtx.createOscillator();
           const gain = this.audioCtx.createGain();
           let freq = 100, dur = 0.1;
@@ -2007,7 +2066,7 @@
     customElements.define('cyber-audio-engine', CyberAudioEngine);
 
     // ============================================================
-    // 5. Пример плагина (cyber-plugin-delay)
+    // 5. Пример плагина
     // ============================================================
     class CyberPluginDelay extends HTMLElement {
       constructor() {
@@ -2074,7 +2133,7 @@
     customElements.define('cyber-plugin-delay', CyberPluginDelay);
 
     // ============================================================
-    // 6. Корневой оркестратор (cyber-daw-workspace) – исправлен
+    // 6. Корневой оркестратор
     // ============================================================
     class CyberDawWorkspace extends HTMLElement {
       constructor() {
@@ -2107,12 +2166,8 @@
               position: relative;
               overflow: hidden;
             }
-            cyber-window {
-              display: none;
-            }
-            cyber-window.visible {
-              display: block;
-            }
+            cyber-window { display: none; }
+            cyber-window.visible { display: block; }
           </style>
           <cyber-top-bar></cyber-top-bar>
           <div class="main-area">
@@ -2155,22 +2210,9 @@
               if (data.visible) {
                 win.classList.add('visible');
                 win.style.display = 'block';
-                // синхронизируем кнопку в топбаре
-                const topBar = document.querySelector('cyber-top-bar');
-                if (topBar) {
-                  const btnId = `toggle-${data.windowId}`;
-                  const btn = topBar.shadowRoot?.querySelector(`#${btnId}`);
-                  if (btn) btn.setAttribute('active', 'true');
-                }
               } else {
                 win.classList.remove('visible');
                 win.style.display = 'none';
-                const topBar = document.querySelector('cyber-top-bar');
-                if (topBar) {
-                  const btnId = `toggle-${data.windowId}`;
-                  const btn = topBar.shadowRoot?.querySelector(`#${btnId}`);
-                  if (btn) btn.setAttribute('active', 'false');
-                }
               }
             }
           });
@@ -2181,7 +2223,6 @@
               win.style.display = 'block';
               const header = win.querySelector('cyber-window-header');
               if (header) header.setAttribute('title', `Piano Roll - ${data.instrumentName || 'Synth'}`);
-              // синхронизация кнопки
               const topBar = document.querySelector('cyber-top-bar');
               if (topBar) {
                 const btn = topBar.shadowRoot?.querySelector('#toggle-piano-roll');
@@ -2190,7 +2231,6 @@
             }
           });
         }
-        // Показываем все окна по умолчанию
         setTimeout(() => {
           Object.values(this.windows).forEach(w => {
             w.classList.add('visible');
@@ -2205,7 +2245,7 @@
     // ============================================================
     // 7. Запуск
     // ============================================================
-    console.log('🛸 Cyber DAW запущена!');
+    console.log('🛸 Cyber DAW финальная версия запущена!');
   </script>
 </body>
 </html>

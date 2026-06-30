@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Cyber DAW — исправленная версия</title>
+  <title>Cyber DAW — полноценная рабочая станция</title>
   <style>
     :root {
       --cyber-bg-main: #1a1a1e;
@@ -16,9 +16,6 @@
       --cyber-accent-glow: rgba(0,255,204,0.3);
       --cyber-accent-orange: #ff9900;
       --cyber-accent-red: #ff3355;
-      --cyber-vocal-purple: #8a2be2;
-      --cyber-vocal-glow: rgba(138,43,226,0.4);
-      --cyber-neon-green: #00ff66;
       --cyber-font: 'Courier New', monospace;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -45,7 +42,6 @@
     .browser-area {
       flex: 0 0 180px;
       height: 100%;
-      overflow-y: auto;
       border-right: 1px solid var(--cyber-border-color);
     }
     .workspace {
@@ -93,9 +89,8 @@
     };
 
     // ============================================================
-    // 2. Все веб-компоненты
+    // 2. Базовые компоненты (только необходимые, сокращённо)
     // ============================================================
-
     // 2.1 cyber-button
     const buttonTemplate = document.createElement('template');
     buttonTemplate.innerHTML = `
@@ -513,7 +508,7 @@
     }
     customElements.define('cyber-vu-meter', CyberVuMeter);
 
-    // 2.6 cyber-key-strip
+    // 2.6 cyber-key-strip (клавиша пианино)
     class CyberKeyStrip extends HTMLElement {
       constructor() {
         super();
@@ -547,6 +542,7 @@
         this._pressed = false;
         this._note = this.getAttribute('note') || 'C4';
         this._key = this.shadowRoot.getElementById('key');
+        this._midi = this._getMidi();
       }
       connectedCallback() {
         const label = this.shadowRoot.getElementById('label');
@@ -554,22 +550,22 @@
         this._key.addEventListener('mousedown', () => {
           this._pressed = true;
           this._key.classList.add('pressed');
-          window.globalBus?.emit('note-on', { pitch: this._getMidi(), velocity: 100 });
+          window.globalBus?.emit('note-on', { pitch: this._midi, velocity: 100 });
         });
         this._key.addEventListener('mouseup', () => {
           this._pressed = false;
           this._key.classList.remove('pressed');
-          window.globalBus?.emit('note-off', { pitch: this._getMidi() });
+          window.globalBus?.emit('note-off', { pitch: this._midi });
         });
         this._key.addEventListener('mouseleave', () => {
           if (this._pressed) {
             this._pressed = false;
             this._key.classList.remove('pressed');
-            window.globalBus?.emit('note-off', { pitch: this._getMidi() });
+            window.globalBus?.emit('note-off', { pitch: this._midi });
           }
         });
         this.addEventListener('mouseenter', () => {
-          window.globalBus?.emit('show-hint', `Нота ${this._note} (MIDI ${this._getMidi()})`);
+          window.globalBus?.emit('show-hint', `Нота ${this._note} (MIDI ${this._midi})`);
         });
         this.addEventListener('mouseleave', () => { window.globalBus?.emit('clear-hint'); });
       }
@@ -1117,7 +1113,7 @@
     }
     customElements.define('cyber-timeline-ruler', CyberTimelineRuler);
 
-    // 2.15 cyber-note-block
+    // 2.15 cyber-note-block (с редактированием)
     class CyberNoteBlock extends HTMLElement {
       constructor() {
         super();
@@ -1132,7 +1128,9 @@
               height: 18px;
               box-sizing: border-box;
               cursor: pointer;
+              transition: box-shadow 0.1s;
             }
+            :host(:hover) { box-shadow: 0 0 10px var(--cyber-accent-cyan); }
             .resize-handle {
               position: absolute;
               right: 0;
@@ -1142,6 +1140,7 @@
               background: rgba(0,0,0,0.2);
               cursor: ew-resize;
             }
+            .resize-handle:hover { background: rgba(255,255,255,0.3); }
           </style>
           <div class="resize-handle"></div>
         `;
@@ -1149,20 +1148,39 @@
         this._pitch = 60;
         this._start = 0;
         this._duration = 1;
+        this._id = 'note-' + Date.now() + '-' + Math.random().toString(36).substr(2,4);
+        this._dragData = null;
       }
       connectedCallback() {
-        this._resize.addEventListener('mousedown', (e) => {
+        // Перетаскивание всей ноты
+        this.addEventListener('mousedown', (e) => {
+          if (e.target === this._resize) return;
           e.stopPropagation();
+          e.preventDefault();
           const startX = e.clientX;
-          const startDur = this._duration;
+          const startY = e.clientY;
+          const startStart = this._start;
+          const startPitch = this._pitch;
+          const grid = this.closest('.grid-area');
+          const rect = grid.getBoundingClientRect();
+          const pxPerBeat = 40;
+          const noteHeight = 20;
           const onMove = (ev) => {
             const dx = ev.clientX - startX;
-            const pxPerBeat = 40;
-            let newDur = startDur + dx / pxPerBeat;
-            newDur = Math.max(0.25, newDur);
-            this._duration = newDur;
-            this.style.width = (newDur * 40) + 'px';
-            this.dispatchEvent(new CustomEvent('note-resize', { detail: { duration: newDur }, bubbles: true, composed: true }));
+            const dy = ev.clientY - startY;
+            let newStart = startStart + dx / pxPerBeat;
+            let newPitch = startPitch - dy / noteHeight;
+            newPitch = Math.max(0, Math.min(127, Math.round(newPitch)));
+            newStart = Math.round(newStart * 4) / 4; // квантование 1/4
+            newStart = Math.max(0, newStart);
+            this._start = newStart;
+            this._pitch = newPitch;
+            this._updatePosition();
+            // событие для сохранения
+            this.dispatchEvent(new CustomEvent('note-moved', {
+              detail: { id: this._id, start: this._start, pitch: this._pitch },
+              bubbles: true, composed: true
+            }));
           };
           const onUp = () => {
             document.removeEventListener('mousemove', onMove);
@@ -1171,6 +1189,41 @@
           document.addEventListener('mousemove', onMove);
           document.addEventListener('mouseup', onUp);
         });
+
+        // Изменение длительности
+        this._resize.addEventListener('mousedown', (e) => {
+          e.stopPropagation();
+          const startX = e.clientX;
+          const startDur = this._duration;
+          const pxPerBeat = 40;
+          const onMove = (ev) => {
+            const dx = ev.clientX - startX;
+            let newDur = startDur + dx / pxPerBeat;
+            newDur = Math.max(0.25, Math.round(newDur * 4) / 4);
+            this._duration = newDur;
+            this.style.width = (newDur * pxPerBeat) + 'px';
+            this.dispatchEvent(new CustomEvent('note-resize', {
+              detail: { id: this._id, duration: this._duration },
+              bubbles: true, composed: true
+            }));
+          };
+          const onUp = () => {
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+          };
+          document.addEventListener('mousemove', onMove);
+          document.addEventListener('mouseup', onUp);
+        });
+
+        // Двойной клик – удаление
+        this.addEventListener('dblclick', () => {
+          this.dispatchEvent(new CustomEvent('note-delete', {
+            detail: { id: this._id },
+            bubbles: true, composed: true
+          }));
+          this.remove();
+        });
+
         this._updatePosition();
       }
       setNote(pitch, start, duration) {
@@ -1186,10 +1239,13 @@
         this.style.width = (this._duration * pxPerBeat) + 'px';
         this.style.top = ((127 - this._pitch) * noteHeight) + 'px';
       }
+      get noteData() {
+        return { id: this._id, pitch: this._pitch, start: this._start, duration: this._duration };
+      }
     }
     customElements.define('cyber-note-block', CyberNoteBlock);
 
-    // 2.16 cyber-playlist-clip
+    // 2.16 cyber-playlist-clip (без изменений)
     class CyberPlaylistClip extends HTMLElement {
       constructor() {
         super();
@@ -1356,7 +1412,7 @@
     }
     customElements.define('cyber-keyboard', CyberKeyboard);
 
-    // 2.19 cyber-channel-strip – ИСПРАВЛЕННАЯ ВЕРСИЯ
+    // 2.19 cyber-channel-strip (с исправлением создания)
     class CyberChannelStrip extends HTMLElement {
       constructor() {
         super();
@@ -1393,42 +1449,34 @@
         const name = this.getAttribute('name') || 'Track';
         this.shadowRoot.getElementById('trackName').textContent = name;
         const stepsContainer = this.shadowRoot.getElementById('steps');
-
-        // Используем try-catch для безопасного создания step-кнопок
         try {
-          // Проверяем, зарегистрирован ли компонент
           if (customElements.get('cyber-step-button')) {
             for (let i = 0; i < 16; i++) {
-              const btn = new CyberStepButton(); // создаём через конструктор
+              const btn = new CyberStepButton();
               btn.setAttribute('data-step', i);
               stepsContainer.appendChild(btn);
             }
           } else {
-            // fallback
             for (let i = 0; i < 16; i++) {
               const div = document.createElement('div');
               div.style.cssText = 'width:18px;height:24px;background:#333;border:1px solid #222;border-radius:2px;display:inline-block;margin:1px;';
               stepsContainer.appendChild(div);
             }
           }
-        } catch (e) {
-          // если всё сломалось – fallback
+        } catch(e) {
           for (let i = 0; i < 16; i++) {
             const div = document.createElement('div');
             div.style.cssText = 'width:18px;height:24px;background:#333;border:1px solid #222;border-radius:2px;display:inline-block;margin:1px;';
             stepsContainer.appendChild(div);
           }
         }
-
         this.shadowRoot.getElementById('trackName').addEventListener('click', () => {
           window.globalBus?.emit('open-piano-roll', { instrumentId: this.getAttribute('id') || 'synth', instrumentName: name });
         });
-
         this.addEventListener('step-toggled', (e) => {
           const { step, active } = e.detail;
           window.globalBus?.emit('pattern-updated', { instrument: this.getAttribute('id') || 'synth', step, active });
         });
-
         if (window.globalBus) {
           this._abort = new AbortController();
           const signal = this._abort.signal;
@@ -1451,7 +1499,6 @@
     // ============================================================
     // 3. Организмы
     // ============================================================
-
     // 3.1 cyber-top-bar
     class CyberTopBar extends HTMLElement {
       constructor() {
@@ -1614,7 +1661,7 @@
     }
     customElements.define('cyber-channel-rack', CyberChannelRack);
 
-    // 3.3 cyber-piano-roll
+    // 3.3 cyber-piano-roll (полноценный редактор)
     class CyberPianoRoll extends HTMLElement {
       constructor() {
         super();
@@ -1627,8 +1674,20 @@
             .grid-inner { position: relative; width: 2000px; height: 2000px; background-image: linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px); background-size: 20px 20px; }
             .keyboard-wrapper { display: flex; height: 100%; }
             cyber-keyboard { height: 100%; }
+            .toolbar {
+              display: flex;
+              gap: 6px;
+              background: var(--cyber-bg-dark);
+              padding: 4px 8px;
+              border-bottom: 1px solid var(--cyber-border-color);
+            }
           </style>
           <div class="layout">
+            <div class="toolbar">
+              <cyber-button id="add-note">➕ Добавить</cyber-button>
+              <cyber-button id="clear-notes">🗑️ Очистить</cyber-button>
+              <span style="color:var(--cyber-text-muted);font-size:11px;margin-left:8px;">Клик по ноте – выделить, двойной клик – удалить</span>
+            </div>
             <cyber-timeline-ruler></cyber-timeline-ruler>
             <div class="keyboard-wrapper">
               <cyber-keyboard></cyber-keyboard>
@@ -1639,21 +1698,64 @@
           </div>
         `;
         this._abort = null;
+        this._notes = [];
+        this._noteIdCounter = 0;
+        this._selectedNote = null;
       }
       connectedCallback() {
-        const gridInner = this.shadowRoot.getElementById('gridInner');
-        const notes = [
+        // Пример начальных нот
+        const sampleNotes = [
           { pitch: 60, start: 0, duration: 1 },
           { pitch: 64, start: 1, duration: 0.5 },
           { pitch: 67, start: 2, duration: 0.75 },
           { pitch: 72, start: 3.5, duration: 1.5 }
         ];
-        notes.forEach((n, i) => {
-          const block = document.createElement('cyber-note-block');
-          block.setNote(n.pitch, n.start, n.duration);
-          block.dataset.id = 'note-' + i;
-          gridInner.appendChild(block);
+        sampleNotes.forEach(n => this.addNote(n.pitch, n.start, n.duration));
+
+        // События от нот
+        this.shadowRoot.getElementById('gridInner').addEventListener('note-moved', (e) => {
+          const { id, start, pitch } = e.detail;
+          const note = this._notes.find(n => n.id === id);
+          if (note) {
+            note.start = start;
+            note.pitch = pitch;
+          }
         });
+        this.shadowRoot.getElementById('gridInner').addEventListener('note-resize', (e) => {
+          const { id, duration } = e.detail;
+          const note = this._notes.find(n => n.id === id);
+          if (note) note.duration = duration;
+        });
+        this.shadowRoot.getElementById('gridInner').addEventListener('note-delete', (e) => {
+          this._notes = this._notes.filter(n => n.id !== e.detail.id);
+        });
+
+        // Добавление ноты по клику на сетку
+        const grid = this.shadowRoot.getElementById('grid');
+        grid.addEventListener('click', (e) => {
+          if (e.target.closest('cyber-note-block')) return;
+          const rect = grid.getBoundingClientRect();
+          const x = e.clientX - rect.left + grid.scrollLeft;
+          const y = e.clientY - rect.top + grid.scrollTop;
+          const pxPerBeat = 40;
+          const noteHeight = 20;
+          const start = Math.round(x / pxPerBeat * 4) / 4;
+          const pitch = Math.max(0, Math.min(127, 127 - Math.round(y / noteHeight)));
+          this.addNote(pitch, start, 0.25);
+        });
+
+        // Кнопка добавления
+        this.shadowRoot.getElementById('add-note').addEventListener('click', () => {
+          this.addNote(60, 0, 0.25);
+        });
+
+        // Кнопка очистки
+        this.shadowRoot.getElementById('clear-notes').addEventListener('click', () => {
+          this._notes = [];
+          this.renderNotes();
+        });
+
+        // Playhead
         if (window.globalBus) {
           this._abort = new AbortController();
           const signal = this._abort.signal;
@@ -1670,6 +1772,24 @@
             ph.style.transform = `translateX(${x}px)`;
           }, { signal });
         }
+        this.renderNotes();
+      }
+      addNote(pitch, start, duration) {
+        const id = 'note-' + (++this._noteIdCounter);
+        this._notes.push({ id, pitch, start, duration });
+        this.renderNotes();
+      }
+      renderNotes() {
+        const container = this.shadowRoot.getElementById('gridInner');
+        // Удаляем существующие ноты (кроме playhead)
+        const toRemove = container.querySelectorAll('cyber-note-block');
+        toRemove.forEach(el => el.remove());
+        this._notes.forEach(n => {
+          const block = document.createElement('cyber-note-block');
+          block.setNote(n.pitch, n.start, n.duration);
+          block.dataset.id = n.id;
+          container.appendChild(block);
+        });
       }
       disconnectedCallback() {
         if (this._abort) this._abort.abort();
@@ -1677,7 +1797,7 @@
     }
     customElements.define('cyber-piano-roll', CyberPianoRoll);
 
-    // 3.4 cyber-playlist
+    // 3.4 cyber-playlist (без изменений)
     class CyberPlaylist extends HTMLElement {
       constructor() {
         super();
@@ -1836,7 +1956,7 @@
     customElements.define('cyber-browser', CyberBrowser);
 
     // ============================================================
-    // 4. Аудио-движок
+    // 4. Аудио-движок (исправлен)
     // ============================================================
     class CyberAudioEngine extends HTMLElement {
       constructor() {
@@ -1863,6 +1983,7 @@
         this._abortController = null;
         this._vuInterval = null;
         this._stopping = false;
+        this._activeOscillators = new Map();
       }
       connectedCallback() {
         window.addEventListener('click', () => this._initAudio(), { once: true });
@@ -1887,6 +2008,13 @@
             this.loopEnabled = data.isEnabled;
             this.loopStart = data.loopStart || 0;
             this.loopEnd = data.loopEnd || 4;
+          }, { signal });
+          // Подписка на ноты
+          window.globalBus.on('note-on', (data) => {
+            this._playNote(data.pitch, data.velocity || 100);
+          }, { signal });
+          window.globalBus.on('note-off', (data) => {
+            this._stopNote(data.pitch);
           }, { signal });
           this._startVuLoop();
         }
@@ -1941,6 +2069,14 @@
         this.isPlaying = false;
         if (this.schedulerId) clearInterval(this.schedulerId);
         this.schedulerId = null;
+        // Останавливаем все звуки
+        this._activeOscillators.forEach((val, pitch) => {
+          try {
+            val.gain.gain.exponentialRampToValueAtTime(0.0001, this.audioCtx.currentTime + 0.05);
+            val.osc.stop(this.audioCtx.currentTime + 0.05);
+          } catch(e) {}
+        });
+        this._activeOscillators.clear();
         window.globalBus?.emit('time-tick', { step: 0, totalBeats: 0, audioTime: 0 });
         this._stopping = false;
       }
@@ -2008,6 +2144,31 @@
           osc.start(time);
           osc.stop(time + dur);
         }
+      }
+      _playNote(pitch, velocity) {
+        if (!this.audioCtx) return;
+        if (this._activeOscillators.has(pitch)) return;
+        const freq = 440 * Math.pow(2, (pitch - 69) / 12);
+        const osc = this.audioCtx.createOscillator();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, this.audioCtx.currentTime);
+        const gain = this.audioCtx.createGain();
+        const vol = (velocity / 127) * 0.15;
+        gain.gain.setValueAtTime(0, this.audioCtx.currentTime);
+        gain.gain.linearRampToValueAtTime(vol, this.audioCtx.currentTime + 0.005);
+        const synthChannel = this._getOrCreateChannel('synth');
+        osc.connect(gain);
+        gain.connect(synthChannel.pannerNode || synthChannel.gainNode);
+        osc.start();
+        this._activeOscillators.set(pitch, { osc, gain });
+      }
+      _stopNote(pitch) {
+        const data = this._activeOscillators.get(pitch);
+        if (!data) return;
+        const { osc, gain } = data;
+        gain.gain.linearRampToValueAtTime(0.0001, this.audioCtx.currentTime + 0.05);
+        osc.stop(this.audioCtx.currentTime + 0.05);
+        this._activeOscillators.delete(pitch);
       }
       _getOrCreateChannel(id) {
         if (this.channels.has(id)) return this.channels.get(id);
@@ -2158,7 +2319,6 @@
             .browser-area {
               flex: 0 0 180px;
               height: 100%;
-              overflow-y: auto;
               border-right: 1px solid var(--cyber-border-color);
             }
             .workspace {
@@ -2245,7 +2405,7 @@
     // ============================================================
     // 7. Запуск
     // ============================================================
-    console.log('🛸 Cyber DAW финальная версия запущена!');
+    console.log('🛸 Cyber DAW финальная версия с работающим звуком и редактором запущена!');
   </script>
 </body>
 </html>
